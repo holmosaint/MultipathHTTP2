@@ -1,0 +1,14 @@
+{
+    "files.associations": {
+        "ssl.h": "c",
+        "event.h": "c",
+        "url_parser.h": "c",
+        "unistd.h": "c",
+        "stdint.h": "c",
+        "nghttp2.h": "c",
+        "bufferevent_ssl.h": "c",
+        "tcp.h": "c",
+        "conf.h": "c",
+        "err.h": "c"
+    }
+}
