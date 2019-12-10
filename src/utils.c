@@ -47,4 +47,3 @@ void print_CDN_info(int id) {
 void print_timeval(struct timeval *t) {
   printf("%ld.%.6lds\n", t->tv_sec, t->tv_usec);
 }
-

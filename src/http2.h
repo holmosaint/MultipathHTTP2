@@ -29,6 +29,11 @@ typedef struct {
   size_t pathlen;
   /* The stream ID of this stream */
   int32_t stream_id;
+  /* Range */
+  ssize_t st;
+  ssize_t en;
+  ssize_t received_bytes;
+  uint8_t *buf_ptr;
 } http2_stream_data;
 
 typedef struct {
@@ -66,7 +71,7 @@ typedef struct {
 #define CDN_NUM 3
 CDN_node CDN[CDN_NUM];
 ssize_t content_size;
-char *global_data_buf;
+uint8_t global_data_buf[(int)1e8];
 
 /* Look up CDN id by session address*/
 int CDN_lookup(http2_session_data *session);

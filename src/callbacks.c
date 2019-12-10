@@ -80,7 +80,11 @@ int on_data_chunk_recv_callback(nghttp2_session *session, uint8_t flags,
   (void)flags;
 
   if (session_data->stream.request_stream_data->stream_id == stream_id) {
-    fwrite(data, 1, len, stdout);
+    // fwrite(data, 1, len, stdout);
+    memcpy((char *)session_data->stream.request_stream_data->buf_ptr, data,
+           len);
+    session_data->stream.request_stream_data->buf_ptr += len;
+    session_data->stream.request_stream_data->received_bytes += len;
   }
   return 0;
 }
@@ -129,7 +133,8 @@ int on_header_callback(nghttp2_session *session, const nghttp2_frame *frame,
   (void)session;
   (void)flags;
 
-  char buf[500];;
+  char buf[500];
+  ;
 
   switch (frame->hd.type) {
     case NGHTTP2_HEADERS:
@@ -138,17 +143,17 @@ int on_header_callback(nghttp2_session *session, const nghttp2_frame *frame,
               frame->hd.stream_id) {
         /* Print response headers for the initiated request. */
         print_header(stderr, name, namelen, value, valuelen);
-        
-        if(content_size <= 0) {
+
+        if (content_size <= 0) {
           // Extrat header to get content size
-          for(ssize_t i = 0;i < namelen; ++i) {
+          for (ssize_t i = 0; i < namelen; ++i) {
             buf[i] = (char)(name[i]);
           }
           buf[namelen] = '\0';
 
-          if(strncmp(buf, "content-length", namelen) == 0) {
-            if(content_size <= 0) {
-              for(ssize_t i = 0;i < valuelen; ++i) {
+          if (strncmp(buf, "content-length", namelen) == 0) {
+            if (content_size <= 0) {
+              for (ssize_t i = 0; i < valuelen; ++i) {
                 buf[i] = (char)(value[i]);
               }
               buf[valuelen] = '\0';

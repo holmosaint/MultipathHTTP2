@@ -152,8 +152,7 @@ int send_PING_frame(int CDN_id) {
   gettimeofday(&CDN[CDN_id].ping_start, NULL);
   fprintf(stderr, "PING start from CDN %d \t", CDN_id);
   print_timeval(&CDN[CDN_id].ping_start);
-  if (nghttp2_submit_ping(session_data->session, NGHTTP2_FLAG_NONE, NULL) <
-      0) {
+  if (nghttp2_submit_ping(session_data->session, NGHTTP2_FLAG_NONE, NULL) < 0) {
     report_error("ERROR: ping unsuccessfully!\n");
   }
   if (session_send(session_data) != 0) {
