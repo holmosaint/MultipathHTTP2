@@ -215,10 +215,10 @@ int schedule_stream(int CDN_id, http2_stream_data **stream_data) {
 int global_schedule(int CDN_id) {
   // printf("[DEBUG] Scheduling CDN %d\n", CDN_id);
   // Only schedule when there are less than 2 streams
-  if ((CDN[CDN_id].session_data->stream.request_stream_data->end_flag &
-       STREAM_END) &&
-      (CDN[CDN_id].session_data->stream.extra_request_stream_data->end_flag &
-       STREAM_END)) {
+  if ((!(CDN[CDN_id].session_data->stream.request_stream_data->end_flag &
+       STREAM_END)) &&
+      (!(CDN[CDN_id].session_data->stream.extra_request_stream_data->end_flag &
+       STREAM_END))) {
     return GLOBAL_SCHE_NO_EMPTY_STREAM;
   }
 

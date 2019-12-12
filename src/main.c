@@ -304,8 +304,8 @@ void *schedule(void *id) {
   while (1) {
     for (int i = 0; i < CDN_NUM; ++i) {
       global_schedule(i);
+      sleep(1);
     }
-    sleep(1);
   }
 }
 

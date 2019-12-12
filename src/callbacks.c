@@ -137,7 +137,6 @@ int on_data_chunk_recv_callback(nghttp2_session *session, uint8_t flags,
     }
 
     stream_data->end_flag = STREAM_END;
-  } else {
   }
 
   pthread_mutex_unlock(&session_data->session_mutex);
@@ -181,6 +180,14 @@ int on_stream_close_callback(nghttp2_session *session, int32_t stream_id,
     pthread_mutex_unlock(&session_data->session_mutex);
     return 0;
   }
+
+  pthread_mutex_lock(&global_mutex);
+  printf("====================Content received %luB\n",
+         stream_data->en - stream_data->st + 1);
+  printf("Total content left: %lu\n", total_content_left);
+  total_content_left -= (stream_data->en - stream_data->st + 1);
+  pthread_mutex_unlock(&global_mutex);
+
   fflush(stream_data->stream_file);
   stream_data->end_flag = STREAM_END;
 
@@ -193,15 +200,10 @@ int on_stream_close_callback(nghttp2_session *session, int32_t stream_id,
           stream_data->st_time.tv_sec, stream_data->st_time.tv_usec,
           stream_data->en_time.tv_sec, stream_data->en_time.tv_usec);
 
+  pthread_mutex_lock(&CDN[CDN_id].CDN_mutex);
   fwrite(buf, 1, strlen(buf), CDN[CDN_id].range_file);
   fflush(CDN[CDN_id].range_file);
   pthread_mutex_unlock(&CDN[CDN_id].CDN_mutex);
-
-  pthread_mutex_lock(&global_mutex);
-  /* printf("====================Content received %luB\n",
-         stream_data->en - stream_data->st + 1); */
-  total_content_left -= (stream_data->en - stream_data->st + 1);
-  pthread_mutex_unlock(&global_mutex);
 
   // global_schedule(CDN_id);
 
