@@ -104,6 +104,9 @@ static void send_client_connection_header(http2_session_data *session_data) {
 
 nghttp2_nv *construct_header(http2_session_data *session_data, ssize_t st,
                              ssize_t en) {
+  int CDN_id = session_data->CDN_id;
+  char buf[500];
+
   nghttp2_nv *hdrs;
   int s = 5;
   if (en == 0) {
@@ -116,7 +119,6 @@ nghttp2_nv *construct_header(http2_session_data *session_data, ssize_t st,
   const char *uri = stream_data->uri;
   const struct http_parser_url *u = stream_data->u;
 
-  char buf[500];
   sprintf(buf, "bytes=%lu-%lu", st, en);
 
   if (s == 4) {
@@ -156,15 +158,22 @@ static void submit_init_request(http2_session_data *session_data) {
   const struct http_parser_url *u = stream_data->u;
   nghttp2_nv *hdrs;
   int num_hdrs;
+  char buf[50];
 
-  stream_data->buf_ptr = global_data_buf + content_size / 3 * CDN_id;
   stream_data->st = content_size / 3 * CDN_id;
   stream_data->en = content_size / 3 * (CDN_id + 1);
+  sprintf(buf, "%lu.txt", stream_data->st);
+  stream_data->stream_file = fopen(buf, "w+");
+  if (stream_data->stream_file == NULL) {
+    fprintf(stderr, "ERROR in creating output file for stream at CDN %d\n",
+            CDN_id);
+  }
   if (CDN_id == 2) stream_data->en = content_size;
   stream_data->received_bytes = 0;
 
   if (CDN_id == 0) {
     hdrs = construct_header(session_data, 0, 0);
+    stream_data->en = (int)1e10;
     num_hdrs = 4;
   } else {
     hdrs = construct_header(session_data, stream_data->st, stream_data->en);
@@ -174,6 +183,7 @@ static void submit_init_request(http2_session_data *session_data) {
   fprintf(stderr, "Request headers at CDN %d:\n", CDN_id);
   print_headers(stderr, hdrs, ARRLEN(hdrs));
 
+  gettimeofday(&session_data->stream.request_stream_data->st_time, NULL);
   stream_id = nghttp2_submit_request(session_data->session, NULL, hdrs,
                                      num_hdrs, NULL, stream_data);
 
@@ -284,12 +294,14 @@ static void eventcb(struct bufferevent *bev, short events, void *ptr) {
   }
   if (events & BEV_EVENT_EOF) {
     // warnx("Disconnected from the remote host");
-    return;
+    /* fprintf(stderr, "Session reach EOF at CDN %d\n", CDN_id);
+    return; */
   } else if (events & BEV_EVENT_ERROR) {
     warnx("Network error");
   } else if (events & BEV_EVENT_TIMEOUT) {
     warnx("Timeout");
   }
+  fprintf(stderr, "[DEBUG] Session loop reach end at CDN %d\n", CDN_id);
   delete_http2_session_data(session_data);
 }
 
@@ -319,13 +331,26 @@ static void initiate_connection(struct event_base *evbase, SSL_CTX *ssl_ctx,
 void init_CDN(int CDN_id) {
   /* Parse the |uri| and stores its components in |u| */
   int rv;
+  char buf[50];
   rv = http_parser_parse_url(CDN[CDN_id].url, strlen(CDN[CDN_id].url), 0,
                              &CDN[CDN_id].u);
   if (rv != 0) {
     errx(1, "Could not parse URI %s", CDN[CDN_id].url);
   }
 
+  // Output file init
+  sprintf(buf, "range_CDN%d.txt", CDN_id);
+  CDN[CDN_id].range_file = fopen(buf, "w+");
+  if (CDN[CDN_id].range_file == NULL) {
+    fprintf(stderr,
+            "ERROR in initialization of output range file [%s] in CDN %d\n",
+            buf, CDN_id);
+    exit(EXIT_FAILURE);
+  }
+
   CDN[CDN_id].RTT_updated = 1;
+
+  pthread_mutex_init(&CDN[CDN_id].CDN_range_mutex, NULL);
 
   CDN[CDN_id].host =
       strndup(&CDN[CDN_id].url[CDN[CDN_id].u.field_data[UF_HOST].off],
@@ -348,7 +373,7 @@ void init_CDN(int CDN_id) {
   initiate_connection(CDN[CDN_id].evbase, CDN[CDN_id].ssl_ctx, CDN[CDN_id].host,
                       CDN[CDN_id].port, CDN[CDN_id].session_data);
 
-  free(CDN[CDN_id].host);
+  free((void *)CDN[CDN_id].host);
   CDN[CDN_id].host = NULL;
 }
 
@@ -445,7 +470,7 @@ int main(int argc, char **argv) {
   sigaction(SIGPIPE, &act, NULL);
 
   for (int i = 0; i < CDN_NUM; ++i) {
-    if (pthread_create(&CDN[i].tid, NULL, run, i) < 0) {
+    if (pthread_create(&CDN[i].tid, NULL, run, (void *)i) < 0) {
       fprintf(stderr, "ERROR in creating thread for CDN %d\n", i);
       exit(EXIT_FAILURE);
     }
@@ -453,6 +478,7 @@ int main(int argc, char **argv) {
 
   for (int i = 0; i < CDN_NUM; ++i) {
     pthread_join(CDN[i].tid, NULL);
+    pthread_mutex_destroy(&CDN[i].CDN_range_mutex);
   }
 
   FILE *outputfile;

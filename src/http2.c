@@ -13,6 +13,7 @@
 #include "callbacks.h"
 #include "http2.h"
 #include "url_parser.h"
+#include "utils.h"
 
 /* Look up CDN id by session address*/
 int CDN_lookup(http2_session_data *session_data) {
@@ -23,14 +24,16 @@ http2_stream_data *create_http2_stream_data(const char *uri,
                                             struct http_parser_url *u) {
   /* MAX 5 digits (max 65535) + 1 ':' + 1 NULL (because of snprintf) */
   size_t extra = 7;
-  http2_stream_data *stream_data = malloc(sizeof(http2_stream_data));
+  http2_stream_data *stream_data =
+      (http2_stream_data *)malloc(sizeof(http2_stream_data));
 
   stream_data->uri = uri;
   stream_data->u = u;
   stream_data->stream_id = -1;
+  pthread_mutex_init(&stream_data->stream_mutex, NULL);
 
   stream_data->authoritylen = u->field_data[UF_HOST].len;
-  stream_data->authority = malloc(stream_data->authoritylen + extra);
+  stream_data->authority = (char *)malloc(stream_data->authoritylen + extra);
   memcpy(stream_data->authority, &uri[u->field_data[UF_HOST].off],
          u->field_data[UF_HOST].len);
   if (u->field_set & (1 << UF_PORT)) {
@@ -49,7 +52,7 @@ http2_stream_data *create_http2_stream_data(const char *uri,
     stream_data->pathlen += (size_t)(u->field_data[UF_QUERY].len + 1);
   }
 
-  stream_data->path = malloc(stream_data->pathlen);
+  stream_data->path = (char *)malloc(stream_data->pathlen);
   if (u->field_set & (1 << UF_PATH)) {
     memcpy(stream_data->path, &uri[u->field_data[UF_PATH].off],
            u->field_data[UF_PATH].len);
@@ -68,14 +71,18 @@ http2_stream_data *create_http2_stream_data(const char *uri,
 }
 
 void delete_http2_stream_data(http2_stream_data *stream_data) {
+  pthread_mutex_destroy(&stream_data->stream_mutex);
+  fclose(stream_data->stream_file);
   free(stream_data->path);
   free(stream_data->authority);
   free(stream_data);
+  stream_data = NULL;
 }
 
 /* Initializes |session_data| */
 http2_session_data *create_http2_session_data(struct event_base *evbase) {
-  http2_session_data *session_data = malloc(sizeof(http2_session_data));
+  http2_session_data *session_data =
+      (http2_session_data *)malloc(sizeof(http2_session_data));
 
   memset(session_data, 0, sizeof(http2_session_data));
   session_data->dnsbase = evdns_base_new(evbase, 1);
@@ -139,7 +146,7 @@ int session_send(http2_session_data *session_data) {
 
   rv = nghttp2_session_send(session_data->session);
   if (rv != 0) {
-    warnx("Fatal error: %s", nghttp2_strerror(rv));
+    fprintf(stderr, "Fatal error: %s", nghttp2_strerror(rv));
     return -1;
   }
   return 0;

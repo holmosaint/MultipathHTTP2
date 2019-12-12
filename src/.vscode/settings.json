@@ -10,5 +10,6 @@
         "tcp.h": "c",
         "conf.h": "c",
         "err.h": "c"
-    }
+    },
+    "python.pythonPath": "/home/holmosaint/Desktop/Tools/Anaconda3/Anaconda3/envs/py3.6/bin/python"
 }

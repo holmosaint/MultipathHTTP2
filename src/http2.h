@@ -29,11 +29,15 @@ typedef struct {
   size_t pathlen;
   /* The stream ID of this stream */
   int32_t stream_id;
+
   /* Range */
+  pthread_mutex_t stream_mutex;
   ssize_t st;
   ssize_t en;
   ssize_t received_bytes;
-  uint8_t *buf_ptr;
+  FILE *stream_file;
+  struct timeval st_time;
+  struct timeval en_time;
 } http2_stream_data;
 
 typedef struct {
@@ -66,6 +70,11 @@ typedef struct {
   struct event_base *evbase;
   const char *host;
   uint16_t port;
+
+  // For output
+  pthread_mutex_t CDN_range_mutex;
+  FILE *range_file;  // Record the ranges that the CDN responsible for,
+                     // format: "xx-xxx"
 } CDN_node;
 
 #define CDN_NUM 3

@@ -76,15 +76,33 @@ int on_data_chunk_recv_callback(nghttp2_session *session, uint8_t flags,
                                 int32_t stream_id, const uint8_t *data,
                                 size_t len, void *user_data) {
   http2_session_data *session_data = (http2_session_data *)user_data;
+  int CDN_id = session_data->CDN_id;
   (void)session;
   (void)flags;
 
   if (session_data->stream.request_stream_data->stream_id == stream_id) {
     // fwrite(data, 1, len, stdout);
-    memcpy((char *)session_data->stream.request_stream_data->buf_ptr, data,
-           len);
-    session_data->stream.request_stream_data->buf_ptr += len;
+
+    fwrite(data, 1, len, session_data->stream.request_stream_data->stream_file);
     session_data->stream.request_stream_data->received_bytes += len;
+    gettimeofday(&session_data->stream.request_stream_data->en_time, NULL);
+
+    if (session_data->stream.request_stream_data->received_bytes >=
+        session_data->stream.request_stream_data->en -
+            session_data->stream.request_stream_data->st + 1) {
+      /* if(session_data->stream.request_stream_data) {
+        delete_http2_stream_data(session_data->stream.request_stream_data);
+        session_data->stream.request_stream_data = NULL;
+      } */
+      fprintf(stderr, "[DEBUG] received bytes: %lu, st: %lu, en: %lu\n",
+              session_data->stream.request_stream_data->received_bytes,
+              session_data->stream.request_stream_data->st,
+              session_data->stream.request_stream_data->en);
+      if (nghttp2_submit_rst_stream(session_data->session, NGHTTP2_FLAG_NONE,
+                                    stream_id, 0) != 0) {
+        report_error("ERROR in sending rst frame!\n");
+      }
+    }
   }
   return 0;
 }
@@ -97,10 +115,24 @@ int on_stream_close_callback(nghttp2_session *session, int32_t stream_id,
                              uint32_t error_code, void *user_data) {
   http2_session_data *session_data = (http2_session_data *)user_data;
   int rv;
+  char buf[500];
+  int CDN_id = session_data->CDN_id;
 
   if (session_data->stream.request_stream_data->stream_id == stream_id) {
     fprintf(stderr, "Stream %d closed with error_code=%u\n", stream_id,
             error_code);
+
+    sprintf(buf, "%lu-%lu %lu-%lu %lu\n",
+            session_data->stream.request_stream_data->st,
+            session_data->stream.request_stream_data->st_time.tv_sec,
+            session_data->stream.request_stream_data->st_time.tv_usec,
+            session_data->stream.request_stream_data->en_time.tv_sec,
+            session_data->stream.request_stream_data->en_time.tv_usec);
+    
+    pthread_mutex_lock(&CDN[CDN_id].CDN_range_mutex);
+    fwrite(buf, 1, strlen(buf), CDN[CDN_id].range_file);
+    pthread_mutex_unlock(&CDN[CDN_id].CDN_range_mutex);
+
     rv = nghttp2_session_terminate_session(session, NGHTTP2_NO_ERROR);
     if (rv != 0) {
       return NGHTTP2_ERR_CALLBACK_FAILURE;
@@ -159,6 +191,8 @@ int on_header_callback(nghttp2_session *session, const nghttp2_frame *frame,
               buf[valuelen] = '\0';
               content_size = atoi(buf);
               printf("[DEBUG] Get content size: %lu\n", content_size);
+              session_data->stream.request_stream_data->en =
+                  content_size / 3 * 2;
             }
           }
         }
