@@ -52,6 +52,7 @@ chunk_size = int(1e4)
 with open('unified_file.txt', 'w+') as uni_file:
     for sf in sub_file_list:
         sf.file_size = 0
+        uni_file.seek(sf.st)
         with open(str(sf.st) + '.txt', 'r') as f: 
             while(1):
                 content = f.read(chunk_size)
