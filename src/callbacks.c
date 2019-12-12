@@ -19,6 +19,7 @@ int on_frame_recv_callback(nghttp2_session *session, const nghttp2_frame *frame,
 
   int CDN_id;
 
+  /* We only consider main stream for PING as well as print headers */
   switch (frame->hd.type) {
     case NGHTTP2_HEADERS:
       if (frame->headers.cat == NGHTTP2_HCAT_RESPONSE &&
@@ -28,7 +29,7 @@ int on_frame_recv_callback(nghttp2_session *session, const nghttp2_frame *frame,
       }
       break;
     case NGHTTP2_PING:
-      printf("[DEBUG]Received PING frame!\n");
+      // printf("[DEBUG]Received PING frame!\n");
       CDN_id = CDN_lookup(session_data);
       if (CDN_id < 0) {
         char buf[500];
@@ -43,7 +44,7 @@ int on_frame_recv_callback(nghttp2_session *session, const nghttp2_frame *frame,
       struct timeval ping_end;
       double RTT;
       gettimeofday(&ping_end, NULL);
-      print_timeval(&ping_end);
+      // print_timeval(&ping_end);
       if (CDN[CDN_id].ping_start.tv_sec == 0 &&
           CDN[CDN_id].ping_start.tv_usec == 0) {
         break;
@@ -76,34 +77,73 @@ int on_data_chunk_recv_callback(nghttp2_session *session, uint8_t flags,
                                 int32_t stream_id, const uint8_t *data,
                                 size_t len, void *user_data) {
   http2_session_data *session_data = (http2_session_data *)user_data;
+  http2_stream_data *stream_data;
   int CDN_id = session_data->CDN_id;
   (void)session;
   (void)flags;
 
+  /* printf("-------------------\n");
+  printf("[DEBUG] Recieved Stream ID %d for CDN %d\n", stream_id, CDN_id);
+  printf("-------------------\n");
+  printf("Received Length: %lu\n", len); */
+
+  pthread_mutex_lock(&session_data->session_mutex);
   if (session_data->stream.request_stream_data->stream_id == stream_id) {
     // fwrite(data, 1, len, stdout);
+    stream_data = session_data->stream.request_stream_data;
+  } else if (session_data->stream.extra_request_stream_data->stream_id ==
+             stream_id) {
+    stream_data = session_data->stream.extra_request_stream_data;
+  } else {
+    pthread_mutex_unlock(&session_data->session_mutex);
+    return 0;
+  }
 
-    fwrite(data, 1, len, session_data->stream.request_stream_data->stream_file);
-    session_data->stream.request_stream_data->received_bytes += len;
-    gettimeofday(&session_data->stream.request_stream_data->en_time, NULL);
+  fwrite(data, 1, len, stream_data->stream_file);
 
-    if (session_data->stream.request_stream_data->received_bytes >=
-        session_data->stream.request_stream_data->en -
-            session_data->stream.request_stream_data->st + 1) {
-      /* if(session_data->stream.request_stream_data) {
-        delete_http2_stream_data(session_data->stream.request_stream_data);
-        session_data->stream.request_stream_data = NULL;
-      } */
-      fprintf(stderr, "[DEBUG] received bytes: %lu, st: %lu, en: %lu\n",
-              session_data->stream.request_stream_data->received_bytes,
-              session_data->stream.request_stream_data->st,
-              session_data->stream.request_stream_data->en);
-      if (nghttp2_submit_rst_stream(session_data->session, NGHTTP2_FLAG_NONE,
-                                    stream_id, 0) != 0) {
-        report_error("ERROR in sending rst frame!\n");
-      }
+  pthread_mutex_lock(&global_mutex);
+  if (stream_data->received_bytes < stream_data->en - stream_data->st + 1) {
+    if (len + stream_data->received_bytes >=
+        stream_data->en - stream_data->st + 1) {
+      estimated_total_content_left -=
+          (stream_data->en - stream_data->st + 1) - stream_data->received_bytes;
+    } else {
+      estimated_total_content_left -= len;
     }
   }
+  pthread_mutex_unlock(&global_mutex);
+
+  /*if(CDN_id == 0) {
+    fprintf(stderr, "+++++++++++Received %luB in stream %d CDN %d\n", len,
+  stream_id, CDN_id); fprintf(stderr, "Content left: %lu\n",
+  estimated_total_content_left); fflush(stderr);
+  }*/
+
+  stream_data->received_bytes += len;
+  gettimeofday(&stream_data->en_time, NULL);
+
+  if (stream_data->received_bytes >= stream_data->en - stream_data->st + 1) {
+    /* if(stream_data) {
+      delete_http2_stream_data(stream_data);
+      stream_data = NULL;
+    } */
+    /* fprintf(
+        stderr, "[DEBUG] received bytes from CDN %d: %lu, st: %lu, en: %lu\n",
+        CDN_id, stream_data->received_bytes, stream_data->st, stream_data->en);
+     */
+    if (nghttp2_submit_rst_stream(session_data->session, NGHTTP2_FLAG_NONE,
+                                  stream_id, 0) != 0) {
+      report_error("ERROR in sending rst frame!\n");
+    }
+
+    stream_data->end_flag = STREAM_END;
+  } else {
+  }
+
+  pthread_mutex_unlock(&session_data->session_mutex);
+
+  // global_schedule(CDN_id);
+
   return 0;
 }
 
@@ -114,30 +154,48 @@ int on_data_chunk_recv_callback(nghttp2_session *session, uint8_t flags,
 int on_stream_close_callback(nghttp2_session *session, int32_t stream_id,
                              uint32_t error_code, void *user_data) {
   http2_session_data *session_data = (http2_session_data *)user_data;
+  http2_stream_data *stream_data;
   int rv;
   char buf[500];
   int CDN_id = session_data->CDN_id;
 
+  pthread_mutex_lock(&session_data->session_mutex);
   if (session_data->stream.request_stream_data->stream_id == stream_id) {
-    fprintf(stderr, "Stream %d closed with error_code=%u\n", stream_id,
-            error_code);
-
-    sprintf(buf, "%lu-%lu %lu-%lu %lu\n",
-            session_data->stream.request_stream_data->st,
-            session_data->stream.request_stream_data->st_time.tv_sec,
-            session_data->stream.request_stream_data->st_time.tv_usec,
-            session_data->stream.request_stream_data->en_time.tv_sec,
-            session_data->stream.request_stream_data->en_time.tv_usec);
-    
-    pthread_mutex_lock(&CDN[CDN_id].CDN_range_mutex);
-    fwrite(buf, 1, strlen(buf), CDN[CDN_id].range_file);
-    pthread_mutex_unlock(&CDN[CDN_id].CDN_range_mutex);
-
-    rv = nghttp2_session_terminate_session(session, NGHTTP2_NO_ERROR);
-    if (rv != 0) {
-      return NGHTTP2_ERR_CALLBACK_FAILURE;
-    }
+    stream_data = session_data->stream.request_stream_data;
+  } else if (session_data->stream.extra_request_stream_data->stream_id ==
+             stream_id) {
+    stream_data = session_data->stream.extra_request_stream_data;
+    session_data->stream.extra_request_stream_data =
+        session_data->stream.request_stream_data;
+    session_data->stream.request_stream_data = stream_data;
+  } else {
+    pthread_mutex_unlock(&session_data->session_mutex);
+    return 0;
   }
+  fflush(stream_data->stream_file);
+  stream_data->end_flag = STREAM_END;
+
+  pthread_mutex_unlock(&session_data->session_mutex);
+
+  fprintf(stderr, "Stream %d closed with error_code=%u\n", stream_id,
+          error_code);
+
+  sprintf(buf, "%lu-%lu %lu-%lu %lu\n", stream_data->st,
+          stream_data->st_time.tv_sec, stream_data->st_time.tv_usec,
+          stream_data->en_time.tv_sec, stream_data->en_time.tv_usec);
+
+  fwrite(buf, 1, strlen(buf), CDN[CDN_id].range_file);
+  fflush(CDN[CDN_id].range_file);
+  pthread_mutex_unlock(&CDN[CDN_id].CDN_mutex);
+
+  pthread_mutex_lock(&global_mutex);
+  printf("====================Content received %luB\n",
+         stream_data->en - stream_data->st + 1);
+  total_content_left -= (stream_data->en - stream_data->st + 1);
+  pthread_mutex_unlock(&global_mutex);
+
+  // global_schedule(CDN_id);
+
   return 0;
 }
 
@@ -166,8 +224,8 @@ int on_header_callback(nghttp2_session *session, const nghttp2_frame *frame,
   (void)flags;
 
   char buf[500];
-  ;
 
+  /* Consider only the main stream for content size */
   switch (frame->hd.type) {
     case NGHTTP2_HEADERS:
       if (frame->headers.cat == NGHTTP2_HCAT_RESPONSE &&
@@ -184,16 +242,16 @@ int on_header_callback(nghttp2_session *session, const nghttp2_frame *frame,
           buf[namelen] = '\0';
 
           if (strncmp(buf, "content-length", namelen) == 0) {
-            if (content_size <= 0) {
-              for (ssize_t i = 0; i < valuelen; ++i) {
-                buf[i] = (char)(value[i]);
-              }
-              buf[valuelen] = '\0';
-              content_size = atoi(buf);
-              printf("[DEBUG] Get content size: %lu\n", content_size);
-              session_data->stream.request_stream_data->en =
-                  content_size / 3 * 2;
+            for (ssize_t i = 0; i < valuelen; ++i) {
+              buf[i] = (char)(value[i]);
             }
+            buf[valuelen] = '\0';
+            estimated_total_content_left = atoi(buf);
+            total_content_left = estimated_total_content_left;
+            content_size = estimated_total_content_left;
+            // printf("[DEBUG] change end to %lu\n", content_size / 3);
+            change_stream_end(0, content_size / 3);
+            printf("[DEBUG] Get content size: %lu\n", content_size);
           }
         }
         break;

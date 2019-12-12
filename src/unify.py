@@ -47,13 +47,13 @@ for CDN_id in range(CDN_NUM):
             sub_file_list.append(sf)
 
 sub_file_list.sort(key=sub_file_key)
-chunk_size = int(1e4)
+chunk_size = int(1e5)
 
-with open('unified_file.txt', 'w+') as uni_file:
+with open('unified_file.txt', 'wb+') as uni_file:
     for sf in sub_file_list:
         sf.file_size = 0
         uni_file.seek(sf.st)
-        with open(str(sf.st) + '.txt', 'r') as f: 
+        with open(str(sf.st) + '.txt', 'rb') as f: 
             while(1):
                 content = f.read(chunk_size)
                 uni_file.write(content)

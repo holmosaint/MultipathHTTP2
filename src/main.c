@@ -56,6 +56,7 @@ char *strndup(const char *s, size_t size);
 #include <string.h>
 
 #include <pthread.h>
+#include <signal.h>
 
 #include <openssl/conf.h>
 #include <openssl/err.h>
@@ -88,112 +89,6 @@ static void send_client_connection_header(http2_session_data *session_data) {
   if (rv != 0) {
     errx(1, "Could not submit SETTINGS: %s", nghttp2_strerror(rv));
   }
-}
-
-#define MAKE_NV(NAME, VALUE, VALUELEN)                             \
-  {                                                                \
-    (uint8_t *)NAME, (uint8_t *)VALUE, sizeof(NAME) - 1, VALUELEN, \
-        NGHTTP2_NV_FLAG_NONE                                       \
-  }
-
-#define MAKE_NV2(NAME, VALUE)                                               \
-  {                                                                         \
-    (uint8_t *)NAME, (uint8_t *)VALUE, sizeof(NAME) - 1, sizeof(VALUE) - 1, \
-        NGHTTP2_NV_FLAG_NONE                                                \
-  }
-
-nghttp2_nv *construct_header(http2_session_data *session_data, ssize_t st,
-                             ssize_t en) {
-  int CDN_id = session_data->CDN_id;
-  char buf[500];
-
-  nghttp2_nv *hdrs;
-  int s = 5;
-  if (en == 0) {
-    s = 4;
-  }
-  hdrs = (nghttp2_nv *)malloc(s * sizeof(nghttp2_nv));
-
-  http2_stream_data *stream_data = session_data->stream.request_stream_data;
-
-  const char *uri = stream_data->uri;
-  const struct http_parser_url *u = stream_data->u;
-
-  sprintf(buf, "bytes=%lu-%lu", st, en);
-
-  if (s == 4) {
-    nghttp2_nv tmp_hdrs[] = {
-        MAKE_NV2(":method", "GET"),
-        MAKE_NV(":scheme", &uri[u->field_data[UF_SCHEMA].off],
-                u->field_data[UF_SCHEMA].len),
-        MAKE_NV(":authority", stream_data->authority,
-                stream_data->authoritylen),
-        MAKE_NV(":path", stream_data->path, stream_data->pathlen)};
-    for (int i = 0; i < s; ++i) {
-      memcpy(&hdrs[i], &tmp_hdrs[i], sizeof(nghttp2_nv));
-    }
-  } else {
-    nghttp2_nv tmp_hdrs[] = {
-        MAKE_NV2(":method", "GET"),
-        MAKE_NV(":scheme", &uri[u->field_data[UF_SCHEMA].off],
-                u->field_data[UF_SCHEMA].len),
-        MAKE_NV(":authority", stream_data->authority,
-                stream_data->authoritylen),
-        MAKE_NV(":path", stream_data->path, stream_data->pathlen),
-        MAKE_NV("range", buf, strlen(buf))};
-    for (int i = 0; i < s; ++i) {
-      memcpy(&hdrs[i], &tmp_hdrs[i], sizeof(nghttp2_nv));
-    }
-  }
-
-  return hdrs;
-}
-
-/* Init request for each CDN */
-static void submit_init_request(http2_session_data *session_data) {
-  int CDN_id = session_data->CDN_id;
-  int32_t stream_id;
-  http2_stream_data *stream_data = session_data->stream.request_stream_data;
-  const char *uri = stream_data->uri;
-  const struct http_parser_url *u = stream_data->u;
-  nghttp2_nv *hdrs;
-  int num_hdrs;
-  char buf[50];
-
-  stream_data->st = content_size / 3 * CDN_id;
-  stream_data->en = content_size / 3 * (CDN_id + 1);
-  sprintf(buf, "%lu.txt", stream_data->st);
-  stream_data->stream_file = fopen(buf, "w+");
-  if (stream_data->stream_file == NULL) {
-    fprintf(stderr, "ERROR in creating output file for stream at CDN %d\n",
-            CDN_id);
-  }
-  if (CDN_id == 2) stream_data->en = content_size;
-  stream_data->received_bytes = 0;
-
-  if (CDN_id == 0) {
-    hdrs = construct_header(session_data, 0, 0);
-    stream_data->en = (int)1e10;
-    num_hdrs = 4;
-  } else {
-    hdrs = construct_header(session_data, stream_data->st, stream_data->en);
-    num_hdrs = 5;
-  }
-
-  fprintf(stderr, "Request headers at CDN %d:\n", CDN_id);
-  print_headers(stderr, hdrs, ARRLEN(hdrs));
-
-  gettimeofday(&session_data->stream.request_stream_data->st_time, NULL);
-  stream_id = nghttp2_submit_request(session_data->session, NULL, hdrs,
-                                     num_hdrs, NULL, stream_data);
-
-  if (stream_id < 0) {
-    errx(1, "Could not submit HTTP request: %s", nghttp2_strerror(stream_id));
-  }
-
-  stream_data->stream_id = stream_id;
-
-  free(hdrs);
 }
 
 /* readcb for bufferevent. Here we get the data from the input buffer
@@ -290,6 +185,10 @@ static void eventcb(struct bufferevent *bev, short events, void *ptr) {
       delete_http2_session_data(session_data);
     }
 
+    pthread_mutex_lock(&global_mutex);
+    ++CDN_alive;
+    pthread_mutex_unlock(&global_mutex);
+
     return;
   }
   if (events & BEV_EVENT_EOF) {
@@ -301,7 +200,7 @@ static void eventcb(struct bufferevent *bev, short events, void *ptr) {
   } else if (events & BEV_EVENT_TIMEOUT) {
     warnx("Timeout");
   }
-  fprintf(stderr, "[DEBUG] Session loop reach end at CDN %d\n", CDN_id);
+  // fprintf(stderr, "[DEBUG] Session loop reach end at CDN %d\n", CDN_id);
   delete_http2_session_data(session_data);
 }
 
@@ -349,8 +248,9 @@ void init_CDN(int CDN_id) {
   }
 
   CDN[CDN_id].RTT_updated = 1;
+  CDN[CDN_id].BW = 10;
 
-  pthread_mutex_init(&CDN[CDN_id].CDN_range_mutex, NULL);
+  pthread_mutex_init(&CDN[CDN_id].CDN_mutex, NULL);
 
   CDN[CDN_id].host =
       strndup(&CDN[CDN_id].url[CDN[CDN_id].u.field_data[UF_HOST].off],
@@ -368,6 +268,8 @@ void init_CDN(int CDN_id) {
   CDN[CDN_id].session_data = create_http2_session_data(CDN[CDN_id].evbase);
   CDN[CDN_id].session_data->CDN_id = CDN_id;
   CDN[CDN_id].session_data->stream.request_stream_data =
+      create_http2_stream_data(CDN[CDN_id].url, &CDN[CDN_id].u);
+  CDN[CDN_id].session_data->stream.extra_request_stream_data =
       create_http2_stream_data(CDN[CDN_id].url, &CDN[CDN_id].u);
 
   initiate_connection(CDN[CDN_id].evbase, CDN[CDN_id].ssl_ctx, CDN[CDN_id].host,
@@ -395,6 +297,16 @@ void *run(void *id) {
 
   event_base_free(CDN[CDN_id].evbase);
   SSL_CTX_free(CDN[CDN_id].ssl_ctx);
+}
+
+void *schedule(void *id) {
+  printf("[PROBE] Content left: %lu\n", estimated_total_content_left);
+  while (1) {
+    for (int i = 0; i < CDN_NUM; ++i) {
+      global_schedule(i);
+      sleep(2);
+    }
+  }
 }
 
 static void usage(const char *progname) {
@@ -459,6 +371,9 @@ int main(int argc, char **argv) {
   SSL_library_init();
 
   content_size = 0;
+  total_content_left = 0;
+  estimated_total_content_left = 0;
+  pthread_mutex_init(&global_mutex, NULL);
   for (int i = 0; i < CDN_NUM; ++i) {
     strncpy(CDN[i].url, argv[i], strlen(argv[i]));
     strncat(CDN[i].url, file_path, strlen(file_path));
@@ -469,22 +384,42 @@ int main(int argc, char **argv) {
   act.sa_handler = SIG_IGN;
   sigaction(SIGPIPE, &act, NULL);
 
-  for (int i = 0; i < CDN_NUM; ++i) {
+  for (int i = CDN_NUM - 1; i >= 0; --i) {
     if (pthread_create(&CDN[i].tid, NULL, run, (void *)i) < 0) {
       fprintf(stderr, "ERROR in creating thread for CDN %d\n", i);
       exit(EXIT_FAILURE);
     }
   }
 
-  for (int i = 0; i < CDN_NUM; ++i) {
-    pthread_join(CDN[i].tid, NULL);
-    pthread_mutex_destroy(&CDN[i].CDN_range_mutex);
+  pthread_t scheduler;
+  pthread_create(&scheduler, NULL, schedule, NULL);
+
+  int rv;
+  while (content_size == 0 || total_content_left > 0) {
+    sleep(10);
   }
 
-  FILE *outputfile;
+  pthread_kill(scheduler, SIGKILL);
+
+  for (int i = 0; i < CDN_NUM; ++i) {
+    rv = nghttp2_session_terminate_session(CDN[i].session_data->session,
+                                           NGHTTP2_NO_ERROR);
+    if (rv != 0) {
+      return NGHTTP2_ERR_CALLBACK_FAILURE;
+    }
+  }
+
+  for (int i = 0; i < CDN_NUM; ++i) {
+    pthread_join(CDN[i].tid, NULL);
+    pthread_mutex_destroy(&CDN[i].CDN_mutex);
+    fclose(CDN[i].range_file);
+  }
+  pthread_mutex_destroy(&global_mutex);
+
+  /* FILE *outputfile;
   outputfile = fopen(output_file_path, "w+");
   fwrite(global_data_buf, 1, content_size, outputfile);
-  fclose(outputfile);
+  fclose(outputfile); */
 
   return 0;
 }
