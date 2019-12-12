@@ -97,7 +97,7 @@ ssize_t content_size, estimated_total_content_left, total_content_left;
 uint8_t global_data_buf[(int)1e8];
 int CDN_alive;
 
-#define CHUNK_SIZE 1000
+#define CHUNK_SIZE 2000
 
 #define MAKE_NV(NAME, VALUE, VALUELEN)                             \
   {                                                                \

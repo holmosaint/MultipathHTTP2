@@ -142,6 +142,15 @@ int on_data_chunk_recv_callback(nghttp2_session *session, uint8_t flags,
 
   pthread_mutex_unlock(&session_data->session_mutex);
 
+  pthread_mutex_lock(&CDN[CDN_id].CDN_mutex);
+  struct timeval tmp_time;
+  gettimeofday(&tmp_time, NULL);
+  double duration = 0;
+  duration = (double)(tmp_time.tv_sec - stream_data->st_time.tv_sec) +
+             (double)(tmp_time.tv_usec - stream_data->st_time.tv_usec) * 1e-6;
+  CDN[CDN_id].BW = stream_data->received_bytes / duration;
+  pthread_mutex_unlock(&CDN[CDN_id].CDN_mutex);
+
   // global_schedule(CDN_id);
 
   return 0;
@@ -189,8 +198,8 @@ int on_stream_close_callback(nghttp2_session *session, int32_t stream_id,
   pthread_mutex_unlock(&CDN[CDN_id].CDN_mutex);
 
   pthread_mutex_lock(&global_mutex);
-  printf("====================Content received %luB\n",
-         stream_data->en - stream_data->st + 1);
+  /* printf("====================Content received %luB\n",
+         stream_data->en - stream_data->st + 1); */
   total_content_left -= (stream_data->en - stream_data->st + 1);
   pthread_mutex_unlock(&global_mutex);
 

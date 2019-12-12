@@ -1,4 +1,6 @@
 import argparse
+import matplotlib.pyplot as plt
+import numpy as np
 
 range_file_path_list = ['range_CDN0.txt', 'range_CDN1.txt', 'range_CDN2.txt']
 
@@ -63,3 +65,24 @@ with open('unified_file.txt', 'wb+') as uni_file:
                     break
         sf.en = sf.st + sf.file_size
         sf.print_info()
+
+color = ['r', 'b', 'g']
+fig, ax = plt.subplots()
+CDN_flag = [0, 0, 0]
+ax.set_xlabel("Time(s)")
+ax.set_ylabel("Byte Range(KB)")
+
+for sf in sub_file_list:
+    x_st = (float)(sf.st_time_s) + (float)(sf.st_time_us) * 1e-6
+    x_en = (float)(sf.en_time_s) + (float)(sf.en_time_us) * 1e-6
+    y_st = sf.st / 1024
+    y_en = sf.en / 1024
+    label = "CDN {}".format(sf.CDN_id)
+    if CDN_flag[sf.CDN_id] == 0:
+        ax.plot([x_st, x_en], [y_st, y_en], c=color[sf.CDN_id], label=label)
+        CDN_flag[sf.CDN_id] = 1
+    else:
+        ax.plot([x_st, x_en], [y_st, y_en], c=color[sf.CDN_id])
+
+ax.legend()
+plt.show()
